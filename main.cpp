@@ -8,6 +8,7 @@
  * Copyright 2018, Michael Beckemeyer
  */
 
+#include <asio/signal_set.hpp>
 #include <asio/ts/net.hpp>
 
 #include <thread>
@@ -299,6 +300,9 @@ private:
     bool m_running = false;
 };
 
+// Thrown on SIGINT, SIGTERM
+struct force_shutdown {};
+
 int main(int argc, char** argv)
 {
     std::vector<std::string> args(argv + 1, argv + argc);
@@ -324,9 +328,34 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    std::shared_ptr<asio::signal_set> signals;
+    try {
+        signals = std::make_shared<asio::signal_set>(io);
+        signals->add(SIGINT);
+        signals->add(SIGTERM);
+        signals->async_wait([signals](const std::error_code& err, int signal) {
+            if (err == asio::error::operation_aborted)
+                return;
+
+            if (err) {
+                std::cout << "Failed to wait for signals: " << err.message() << std::endl;
+                return;
+            }
+
+            (void) signal;
+            throw force_shutdown();
+        });
+
+    } catch (const std::exception& e) {
+        std::cout << "Failed to setup signal handlers: " << e.what() << std::endl;
+    }
+
     while (1) {
         try {
             io.run();
+            break;
+        } catch (force_shutdown) {
+            std::cout << "Shutting down." << std::endl;
             break;
         } catch (const std::exception& e) {
             std::cout << "Error: " << e.what() << std::endl;
