@@ -184,15 +184,15 @@ private:
 class server : public std::enable_shared_from_this<server>
 {
 public:
-    server(const tcp::endpoint& local, std::string remote_host, uint16_t remote_port, io_context& io)
-        : m_listen_addr(local)
+    server(const tcp::endpoint& listen_addr, std::string remote_host, uint16_t remote_port, io_context& io)
+        : m_listen_addr(listen_addr)
         , m_dest_host(std::move(remote_host))
         , m_dest_port(remote_port)
         , m_listener(io)
     {
-        m_listener.open(local.protocol());
+        m_listener.open(m_listen_addr.protocol());
         m_listener.set_option(tcp::acceptor::reuse_address(true));
-        m_listener.bind(local);
+        m_listener.bind(m_listen_addr);
         m_listener.listen();
     }
 
@@ -303,31 +303,18 @@ private:
 // Thrown on SIGINT, SIGTERM
 struct force_shutdown {};
 
-int main(int argc, char** argv)
-{
-    std::vector<std::string> args(argv + 1, argv + argc);
-    if (args.size() != 3) {
-        std::cout << "Usage: " << argv[0] << " <LOCAL_PORT> <DEST_HOST> <DEST_PORT>" << std::endl;
-        return 1;
-    }
-
-    tcp::endpoint local(address_v4::any(), std::stoi(args[0]));
-    std::string remote_host = args[1];
-    uint16_t remote_port = std::stoi(args[2]);
-
-    std::cout << "Setting up forwarding from local port " << local.port()
-              << " to destination " << remote_host << ":" << remote_port << std::endl;
-
-    asio::io_context io;
+int start_server(tcp::endpoint listen_addr, const std::string& remote_host, uint16_t remote_port, asio::io_context& io) {
+    // Start listening on the local socket.
     std::shared_ptr<server> srv;
     try {
-        srv = std::make_shared<server>(local, remote_host, remote_port, io);
+        srv = std::make_shared<server>(listen_addr, remote_host, remote_port, io);
         srv->start();
     } catch (const std::exception& e) {
         std::cout << "Failed to start server: " << e.what() << std::endl;
         return 1;
     }
 
+    // Wait for incoming signals.
     std::shared_ptr<asio::signal_set> signals;
     try {
         signals = std::make_shared<asio::signal_set>(io);
@@ -345,9 +332,32 @@ int main(int argc, char** argv)
             (void) signal;
             throw force_shutdown();
         });
-
     } catch (const std::exception& e) {
         std::cout << "Failed to setup signal handlers: " << e.what() << std::endl;
+        return 1;
+    }
+
+    return 0;
+}
+
+int main(int argc, char** argv)
+{
+    std::vector<std::string> args(argv + 1, argv + argc);
+    if (args.size() != 3) {
+        std::cout << "Usage: " << argv[0] << " <LOCAL_PORT> <DEST_HOST> <DEST_PORT>" << std::endl;
+        return 1;
+    }
+
+    tcp::endpoint listen_addr(address_v4::any(), std::stoi(args[0]));
+    std::string remote_host = args[1];
+    uint16_t remote_port = std::stoi(args[2]);
+
+    std::cout << "Setting up forwarding from local port " << listen_addr.port()
+              << " to destination " << remote_host << ":" << remote_port << std::endl;
+
+    asio::io_context io;
+    if (int ret = start_server(listen_addr, remote_host, remote_port, io); ret != 0) {
+        return ret;
     }
 
     while (1) {
